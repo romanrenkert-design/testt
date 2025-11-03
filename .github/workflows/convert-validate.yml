@@ -1,1 +1,72 @@
+name: PDF → GFM (Convert & Validate)
+
+on:
+  push:
+    branches: ["**"]
+  pull_request:
+    branches: ["**"]
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Convert PDFs to Markdown
+        run: |
+          python scripts/pdf_to_markdown.py --input_dir reports/raw --output_dir reports/cleaned --config schema_config.yml || true
+
+      - name: List files (debug)
+        run: |
+          echo "==== repo root ===="
+          ls -lah
+          echo "==== reports/raw ===="
+          ls -lah reports/raw || true
+          echo "==== reports/cleaned ===="
+          ls -lah reports/cleaned || true
+
+      - name: Validate Coding Schema
+        if: ${{ hashFiles('reports/cleaned/**/*.md') != '' }}
+        run: |
+          python scripts/schema_validator.py --input_dir reports/cleaned --config schema_config.yml --report .schema_report.json
+
+      - name: Compare to PDF source
+        if: ${{ hashFiles('reports/cleaned/**/*.md') != '' && hashFiles('reports/raw/**/*.pdf') != '' }}
+        run: |
+          python scripts/pdf_compare.py --pdf_dir reports/raw --md_dir reports/cleaned --config schema_config.yml --report .compare_report.json
+
+      - name: Markdownlint
+        if: ${{ hashFiles('reports/cleaned/**/*.md') != '' }}
+        uses: avto-dev/markdown-lint@v1
+        with:
+          config: ".markdownlint.json"
+          args: "reports/cleaned/**/*.md"
+
+      - name: Save artifacts (reports)
+        uses: actions/upload-artifact@v4
+        with:
+          name: schema-and-compare-reports
+          path: |
+            .schema_report.json
+            .compare_report.json
+          if-no-files-found: ignore
+
+      - name: Commit generated Markdown (if any)
+        if: ${{ github.event_name == 'push' && hashFiles('reports/cleaned/**/*.md') != '' }}
+        run: |
+          git config user.name "github-actions"
+          git config user.email "github-actions@users.noreply.github.com"
+          git add reports/cleaned || true
+          git diff --cached --quiet || (git commit -m "chore: auto-generate GFM from PDFs" && git push)
 
